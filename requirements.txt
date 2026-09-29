@@ -1,0 +1,4 @@
+# npd_slurp_exclusions app dependencies.
+# Splitting uses only the stdlib (csv/json/hashlib); requests is for the
+# conditional-GET download of the LEIE full file.
+requests>=2.31,<3

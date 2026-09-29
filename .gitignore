@@ -1,0 +1,15 @@
+# Downloaded LEIE source cache -- this is fetched data, never repo content.
+leie_raw_data_cache/*
+!leie_raw_data_cache/ReadMe.md
+.leie_meta.json
+# Split (per-party JSON) output is cache too -- it belongs in S3, not this
+# public/CC0 repo.
+leie_split_data/
+leie_split_data*/
+# Python
+venv/*
+.venv/
+.env
+__pycache__
+.pytest_cache/
+logs/*

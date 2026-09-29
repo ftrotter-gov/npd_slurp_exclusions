@@ -1,77 +1,97 @@
-# {{ cookiecutter.project_name }}
+# NPD Slurp Exclusions
 
-{{ cookiecutter.project_description }}
+Download and process public healthcare **provider-exclusion** data for the National Provider Directory (NPD).
 
-## About the Project
+## Overview
 
-**{project_statement}**
+This project mirrors the HHS-OIG **LEIE** (List of Excluded Individuals/Entities) — the authoritative
+federal list of providers excluded from participating in Medicare, Medicaid, and all other federal
+health care programs — and splits it into one JSON document per excluded party for downstream entity
+resolution.
 
-<!---
-### Project Vision
-**{project vision}** -->
+It is a small, resumable two-step pipeline:
 
-<!--
-### Project Mission
-**{project mission}** -->
+- **`download_leie.py`** — conditional GET (`If-None-Match` / `If-Modified-Since`) of the OIG
+  **full** database file `UPDATED.csv`, into a local cache. The prior run's ETag/Last-Modified is
+  stored in a sidecar so an unchanged monthly file returns HTTP 304 and is not re-downloaded.
+- **`split_leie_to_json.py`** — explode `UPDATED.csv` into `<STATE>/<key>.json`, one file per
+  excluded party, plus a `_manifest.json` listing every key in the current snapshot.
 
-<!--
-### Agency Mission
-TODO: Good to include since this is an agency-led project -->
+### Why the full file only (no supplements)
 
-<!--
-### Team Mission
-TODO: Good to include since this is an agency-led project -->
+OIG publishes the full `UPDATED.csv` and separate monthly *supplement* delta files. The full file is
+a complete monthly replacement that **already incorporates new exclusions and removes reinstated
+parties** — OIG explicitly warns against applying the supplements on top of it. This pipeline
+therefore consumes the full file exclusively.
 
-<!--
-## Core Team
+### Reinstatement correctness (`_manifest.json`)
 
-A list of core team members responsible for the code and documentation in this repository can be found in [COMMUNITY.md](COMMUNITY.md).
--->
+Because OIG *removes* reinstated parties from each month's file, a party can disappear between
+snapshots. The split step rebuilds the output tree from scratch each run and emits
+`_manifest.json` — the exact set of keys present in the current snapshot. Downstream consumers should
+treat the raw (versioned) `UPDATED.csv` as the source of truth and use the manifest to filter the
+split set to the current snapshot, so a reinstated party's stale JSON in an additive-only destination
+is ignored.
 
-<!--
-## Repository Structure
+## Record layout
 
-TODO: Including the repository structure helps viewers quickly understand the project layout. Using the "tree -d" command can be a helpful way to generate this information, but, be sure to update it as the project evolves and changes over time.
+The LEIE record layout (per the OIG
+[record-layout reference](https://oig.hhs.gov/exclusions/files/leie_record_layout.pdf)):
 
-**{list directories and descriptions}**
+```
+LASTNAME, FIRSTNAME, MIDNAME, BUSNAME, GENERAL, SPECIALTY, UPIN, NPI, DOB,
+ADDRESS, CITY, STATE, ZIP, EXCLTYPE, EXCLDATE, REINDATE, WAIVERDATE, WVRSTATE
+```
 
-TODO: Add a 'table of contents" for your documentation. Tier 0/1 projects with simple README.md files without many sections may or may not need this, but it is still extremely helpful to provide "bookmark" or "anchor" links to specific sections of your file to be referenced in tickets, docs, or other communication channels.
+Individuals populate the name fields; entities populate `BUSNAME`. `NPI` is `0000000000` when
+absent. `REINDATE` is `00000000` for active exclusions. **The file contains no SSN**, so it is
+cleanly public.
 
-**{list of .md at top directory and descriptions}**
+### Key strategy
 
--->
+Each excluded party gets a stable, collision-free key:
 
-<!---
-## Local Development
+- **`NPI`** when it is present and real (not `0000000000`).
+- Otherwise a deterministic 16-hex content hash of the identity fields — `BUSNAME` for entities,
+  `LASTNAME|FIRSTNAME|MIDNAME|DOB` for individuals — salted with `EXCLDATE`. A numeric suffix
+  disambiguates the rare exact collision.
 
- TODO - with example below:
-This project is monorepo with several apps. Please see the [api](./api/README.md) and [frontend](./frontend/README.md) READMEs for information on spinning up those projects locally. Also see the project [documentation](./documentation) for more info.
--->
+Files are sharded by two-letter `STATE`; parties with no valid state land under `XX/`.
 
-<!--
-## Coding Style and Linters
+## Setup
 
-TODO - Add the repo's linting and code style guidelines
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
 
-Each application has its own linting and testing guidelines. Lint and code tests are run on each commit, so linters and tests should be run locally before committing.
- -->
+## Usage
 
-<!---
-## Branching Model
+```bash
+# Download the full LEIE file (skips download if unchanged since last run):
+python download_leie.py --cache-dir ./leie_raw_data_cache
 
-TODO - with example below:
-This project follows [trunk-based development](https://trunkbaseddevelopment.com/), which means:
+# Split it into per-party JSON + a manifest:
+python split_leie_to_json.py \
+    --csv-path ./leie_raw_data_cache/UPDATED.csv \
+    --json-dir ./leie_split_data
+```
 
-* Make small changes in [short-lived feature branches](https://trunkbaseddevelopment.com/short-lived-feature-branches/) and merge to `main` frequently.
-* Be open to submitting multiple small pull requests for a single ticket (i.e. reference the same ticket across multiple pull requests).
-* Treat each change you merge to `main` as immediately deployable to production. Do not merge changes that depend on subsequent changes you plan to make, even if you plan to make those changes shortly.
-* Ticket any unfinished or partially finished work.
-* Tests should be written for changes introduced, and adhere to the text percentage threshold determined by the project.
+The downloaded CSV and the split JSON tree are **fetched/derived data, not repository content**, and
+are `.gitignore`d — in production they live in the pipeline's versioned S3 buckets.
 
-This project uses **continuous deployment** using [Github Actions](https://github.com/features/actions) which is configured in the [./github/workflows](.github/workflows) directory.
+## Tests
 
-Pull-requests are merged to `main` and the changes are immediately deployed to the development environment. Releases are created to push changes to production.
--->
+```bash
+python -m pytest tests/ -q
+```
+
+## Scope
+
+v1 covers **OIG LEIE only**. The pipeline is structured so additional exclusion sources (e.g. state
+Medicaid exclusion lists) can be added as sibling modules later — LEIE is the authoritative federal
+core but is not a superset of the state lists.
 
 ## Policies
 
@@ -87,7 +107,7 @@ _Submit a vulnerability:_ Vulnerability reports can be submitted through [Bugcro
 
 A Software Bill of Materials (SBOM) is a formal record containing the details and supply chain relationships of various components used in building software.
 
-In the spirit of [Executive Order 14028 - Improving the Nation's Cyber Security](https://www.gsa.gov/technology/it-contract-vehicles-and-purchasing-programs/information-technology-category/it-security/executive-order-14028), a SBOM for this repository is provided here: https://github.com/{{ cookiecutter.project_org }}/{{ cookiecutter.project_repo_name }}/network/dependencies.
+In the spirit of [Executive Order 14028 - Improving the Nation's Cyber Security](https://www.gsa.gov/technology/it-contract-vehicles-and-purchasing-programs/information-technology-category/it-security/executive-order-14028), a SBOM for this repository is provided here: https://github.com/ftrotter-gov/npd_slurp_exclusions/network/dependencies.
 
 For more information and resources about SBOMs, visit: https://www.cisa.gov/sbom.
 
